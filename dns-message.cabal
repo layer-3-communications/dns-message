@@ -1,0 +1,22 @@
+cabal-version: 2.4
+name: dns-message
+version: 0.1.0.0
+synopsis: Encode and decode DNS messages
+license: BSD-3-Clause
+license-file: LICENSE
+author: Zachary Churchill
+maintainer: zchurchill@layer3com.com
+copyright: 2020 Layer 3 Communications
+category: Data
+build-type: Simple
+extra-source-files: CHANGELOG.md
+
+library
+  exposed-modules: Dns.Message
+  build-depends:
+    , base >=4.14 && <4.15
+    , primitive >= 0.7
+    , bytesmith >= 0.3.5
+    , byteslice >= 0.2.2
+  hs-source-dirs: src
+  default-language: Haskell2010

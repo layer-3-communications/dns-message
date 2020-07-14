@@ -1,0 +1,203 @@
+{-# language BangPatterns #-}
+{-# language DuplicateRecordFields #-}
+{-# language PatternSynonyms #-}
+{-# language RankNTypes #-}
+
+module Dns.Message
+  ( -- * Functions
+    encode
+  , decode
+    -- * Types
+  , Message(..)
+  , ResourceRecord(..)
+  , Question(..)
+  , Type(..)
+  , Class(..)
+    -- * Opcode Patterns
+  , pattern Query
+  , pattern IQuery
+  , pattern Status
+  , pattern Notify
+  , pattern Update
+    -- * Bitfields
+  , query
+  , authoritativeAnswer
+  , truncation
+  ) where
+
+import Data.Bits (testBit,setBit,clearBit)
+import Data.Primitive (SmallArray,ByteArray)
+import Data.Word (Word32,Word16,Word8)
+import Data.Bytes (Bytes)
+import Data.Bytes.Parser (Parser)
+
+import qualified Data.Bytes.Parser as Parser
+
+encode :: Message -> ByteArray
+encode = error "write me"
+
+decode :: Bytes -> Maybe Message
+decode b = Parser.parseBytesMaybe parser b
+
+parser :: Parser () s a
+parser = error "write me"
+
+data Message = Message
+  { identifier :: !Word16 -- ^ Query or reply identifier
+  , bitfields :: !Bitfields -- ^ Sub-byte-sized fields
+  , question :: !(SmallArray Question) -- ^ The question for the name server
+  , answer :: !(SmallArray ResourceRecord) -- ^ RRs answering the question
+  , authority :: !(SmallArray ResourceRecord) -- ^ RRs pointing toward an authority
+  , additional :: !(SmallArray ResourceRecord) -- ^ RRs holding additional information
+  } deriving (Eq, Show)
+
+data Question = Question
+  { name :: !ByteArray -- ^ Name
+  , type_ :: !Type -- ^ Question type
+  , class_ :: !Class  -- ^ Question class
+  } deriving (Eq,Show)
+
+data ResourceRecord = ResourceRecord
+  { name :: !ByteArray -- ^ Name
+  , type_ :: !Type -- ^ Resource record type
+  , class_ :: !Class  -- ^ Resource record class
+  , ttl :: !Word32 -- ^ Time to live
+  , rdata :: !ByteArray -- ^ Resource data
+  } deriving (Eq,Show)
+
+-- | Raw data format for the header of DNS Query and Response.
+data Bitfields = Bitfields !Word16
+  deriving (Eq,Show)
+
+newtype ResponseCode = ResponseCode Word8
+  deriving (Eq,Show)
+
+-- | No error condition.
+pattern NoErr     :: ResponseCode
+pattern NoErr      = ResponseCode  0
+
+-- | Format error - The name server was
+--   unable to interpret the query.
+pattern FormatErr :: ResponseCode
+pattern FormatErr  = ResponseCode  1
+
+-- | Server failure - The name server was
+--   unable to process this query due to a
+--   problem with the name server.
+pattern ServFail  :: ResponseCode
+pattern ServFail   = ResponseCode  2
+
+-- | Name Error - Meaningful only for
+--   responses from an authoritative name
+--   server, this code signifies that the
+--   domain name referenced in the query does
+--   not exist.
+pattern NameErr   :: ResponseCode
+pattern NameErr    = ResponseCode  3
+
+-- | Not Implemented - The name server does
+--   not support the requested kind of query.
+pattern NotImpl   :: ResponseCode
+pattern NotImpl    = ResponseCode  4
+
+-- | Refused - The name server refuses to perform the specified operation for
+-- policy reasons.  For example, a name server may not wish to provide the
+-- information to the particular requester, or a name server may not wish to
+-- perform a particular operation (e.g., zone transfer) for particular data.
+pattern Refused   :: ResponseCode
+pattern Refused    = ResponseCode  5
+
+-- | YXDomain - Dynamic update response, a pre-requisite domain that should not
+-- exist, does exist.
+pattern YXDomain :: ResponseCode
+pattern YXDomain  = ResponseCode 6
+
+-- | YXRRSet - Dynamic update response, a pre-requisite RRSet that should not
+-- exist, does exist.
+pattern YXRRSet  :: ResponseCode
+pattern YXRRSet   = ResponseCode 7
+
+-- | NXRRSet - Dynamic update response, a pre-requisite RRSet that should
+-- exist, does not exist.
+pattern NXRRSet  :: ResponseCode
+pattern NXRRSet   = ResponseCode 8
+
+-- | NotAuth - Dynamic update response, the server is not authoritative for the
+-- zone named in the Zone Section.
+pattern NotAuth  :: ResponseCode
+pattern NotAuth   = ResponseCode 9
+
+-- | NotZone - Dynamic update response, a name used in the Prerequisite or
+-- Update Section is not within the zone denoted by the Zone Section.
+pattern NotZone  :: ResponseCode
+pattern NotZone   = ResponseCode 10
+
+newtype Opcode = Opcode Word8
+  deriving (Eq,Show)
+
+pattern Query :: Opcode
+pattern Query = Opcode 0
+
+pattern IQuery :: Opcode
+pattern IQuery = Opcode 1
+
+pattern Status :: Opcode
+pattern Status = Opcode 2
+
+pattern Notify :: Opcode
+pattern Notify = Opcode 4
+
+pattern Update :: Opcode
+pattern Update = Opcode 5
+
+newtype Type = Type Word16
+  deriving (Eq,Show)
+
+newtype Class = Class Word16
+  deriving (Eq,Show)
+
+type Lens' a b = forall f. Functor f => (b -> f b) -> (a -> f a)
+
+assignBit :: Word16 -> Int -> Bool -> Word16
+{-# inline assignBit #-}
+assignBit !w !ix !b = case b of
+  True -> setBit w ix
+  False -> clearBit w ix
+
+-- | True means query, False means response
+query :: Lens' Bitfields Bool
+{-# inline query #-}
+query k (Bitfields x) = fmap (\b -> Bitfields (assignBit x 15 b)) (k (testBit x 15))
+
+-- | AA (Authoritative Answer) bit - this bit is valid in responses,
+-- and specifies that the responding name server is an
+-- authority for the domain name in question section.
+authoritativeAnswer :: Lens' Bitfields Bool
+{-# inline authoritativeAnswer #-}
+authoritativeAnswer k (Bitfields x) = fmap (\b -> Bitfields (assignBit x 10 b)) (k (testBit x 10))
+
+-- | TC (Truncated Response) bit - specifies that this message was truncated
+-- due to length greater than that permitted on the
+-- transmission channel.
+truncation :: Lens' Bitfields Bool
+{-# inline truncation #-}
+truncation k (Bitfields x) = fmap (\b -> Bitfields (assignBit x 9 b)) (k (testBit x 9))
+
+-- TODO: Add these other lenses. Opcode and response code are a little tricky.
+--
+-- opcode :: !Opcode -- ^ Kind of query.
+-- recursionDesired :: !Bool
+-- -- ^ RD (Recursion Desired) bit - this bit may be set in a query and
+-- -- is copied into the response.  If RD is set, it directs the name server
+-- -- to pursue the query recursively. Recursive query support is optional.
+-- recursionAvailable :: !Bool
+-- -- ^ RA (Recursion Available) bit - this be is set or cleared in a response,
+-- -- and denotes whether recursive query support is available in the name server.
+-- responseCode :: !ResponseCode
+-- -- ^ RCODE (Response Code). Only 4 bits.
+-- authenticatedData :: !Bool
+-- -- ^ AD (Authenticated Data) bit - (RFC4035, Section 3.2.3).
+-- checkingDisabled :: !Bool
+-- -- ^ CD (Checking Disabled) bit - (RFC4035, Section 3.2.2).
+-- deriving (Eq, Show)
+
