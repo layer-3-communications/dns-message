@@ -19,6 +19,18 @@ module Dns.Message
   , pattern Status
   , pattern Notify
   , pattern Update
+    -- * ResponseCode Patterns
+  , pattern NoErr
+  , pattern FormatErr
+  , pattern ServFail
+  , pattern NameErr
+  , pattern NotImpl
+  , pattern Refused
+  , pattern YXDomain
+  , pattern YXRRSet
+  , pattern NXRRSet
+  , pattern NotAuth
+  , pattern NotZone
     -- * Bitfields
   , query
   , authoritativeAnswer
@@ -28,8 +40,10 @@ module Dns.Message
 import Data.Bits (testBit,setBit,clearBit)
 import Data.Primitive (SmallArray,ByteArray)
 import Data.Word (Word32,Word16,Word8)
-import Data.Bytes (Bytes)
+import Data.Bytes (Bytes, toByteArray)
 import Data.Bytes.Parser (Parser)
+import qualified Data.Bytes.Parser as P
+import qualified Data.Bytes.Parser.BigEndian as P
 
 import qualified Data.Bytes.Parser as Parser
 
@@ -39,8 +53,61 @@ encode = error "write me"
 decode :: Bytes -> Maybe Message
 decode b = Parser.parseBytesMaybe parser b
 
-parser :: Parser () s a
-parser = error "write me"
+parser :: Parser () s Message
+parser = do
+  identifier' <- P.word16 ()
+  bitfields' <- Bitfields <$> P.word16 ()
+  questionCount <- P.word16 ()
+  answerCount <- P.word16 ()
+  authorityCount <- P.word16 ()
+  additionalCount <- P.word16 ()
+  question' <- P.replicate (fromIntegral questionCount) parseQuestion
+  answer' <- P.replicate (fromIntegral answerCount) parseResourceRecord
+  authority' <- P.replicate (fromIntegral authorityCount) parseResourceRecord
+  additional' <- P.replicate (fromIntegral additionalCount) parseResourceRecord
+  pure $ Message
+    { identifier = identifier'
+    , bitfields = bitfields'
+    , question = question'
+    , answer = answer'
+    , authority = authority'
+    , additional = additional'
+    }
+
+-- QNAME
+-- Single octet defining the number of characters in the label which follows. 
+-- The top two bits of this number must be 00 (indicates the label format is being used) 
+-- which gives a maximum domain name length of 63 bytes (octets). 
+-- A value of zero indicates the end of the name field.
+
+parseQuestion :: Parser () s Question
+parseQuestion = do
+  len <- P.any ()
+  name' <- P.take () (fromIntegral len)
+  type_' <- Type <$> P.word16 ()
+  class_' <- Class <$> P.word16 ()
+  pure $ Question
+    { name = toByteArray name'
+    , type_ = type_'
+    , class_ = class_'
+    }
+
+parseResourceRecord :: Parser () s ResourceRecord
+parseResourceRecord = do
+  namelen <- P.any ()
+  name' <- P.take () (fromIntegral namelen)
+  type_' <- Type <$> P.word16 ()
+  class_' <- Class <$> P.word16 ()
+  ttl' <- P.word32 ()
+  rdataLen <- P.word16 ()
+  rdata' <- P.take () (fromIntegral rdataLen)
+  pure $ ResourceRecord
+    { name = toByteArray name'
+    , type_ = type_'
+    , class_ = class_'
+    , ttl = ttl'
+    , rdata = toByteArray rdata'
+    }
 
 data Message = Message
   { identifier :: !Word16 -- ^ Query or reply identifier
