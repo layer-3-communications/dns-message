@@ -2,6 +2,7 @@
 {-# language DuplicateRecordFields #-}
 {-# language PatternSynonyms #-}
 {-# language RankNTypes #-}
+{-# language NamedFieldPuns #-}
 
 module Dns.Message
   ( -- * Functions
@@ -37,21 +38,76 @@ module Dns.Message
   , truncation
   ) where
 
+import Control.Monad (when)
 import Data.Bits (testBit,setBit,clearBit)
-import Data.Primitive (SmallArray,ByteArray)
-import Data.Word (Word32,Word16,Word8)
 import Data.Bytes (Bytes, toByteArray)
 import Data.Bytes.Parser (Parser)
+import Data.Coerce (coerce)
+import Data.Primitive (SmallArray,ByteArray,sizeofByteArray)
+import Data.Word (Word32,Word16,Word8)
+import qualified Data.Bytes as Bytes
+import qualified Data.Bytes.Builder as BB
+import qualified Data.Bytes.Chunks as Chunks
 import qualified Data.Bytes.Parser as P
 import qualified Data.Bytes.Parser.BigEndian as P
-
-import qualified Data.Bytes.Parser as Parser
+import qualified Data.Primitive.Contiguous as Contiguous
 
 encode :: Message -> ByteArray
-encode = error "write me"
+encode m = Chunks.concatU $ BB.run len (builderMessage m)
+  where
+  len = lenIdentifier + lenBitfields + 2 + 2 + 2 + 2 + lenQuestion + lenAnswer + lenAuthority + lenAdditional
+  lenIdentifier = 2
+  lenBitfields = 2
+  lenQuestion = 
+    let qlen :: Question -> Int
+        qlen Question{name} = 2 + sizeofByteArray name + 2 + 2
+     in Contiguous.foldl' (\acc q -> acc + qlen q) 0 (question m)
+  lenAnswer     = Contiguous.foldl' (\acc x -> lenResourceRecord x + acc) 0 (answer m)
+  lenAuthority  = Contiguous.foldl' (\acc x -> lenResourceRecord x + acc) 0 (authority m)
+  lenAdditional = Contiguous.foldl' (\acc x -> lenResourceRecord x + acc) 0 (additional m)
+  lenResourceRecord :: ResourceRecord -> Int
+  lenResourceRecord ResourceRecord{name,rdata} = 2 + sizeofByteArray name + 2 + 2 + 4 + 2 + sizeofByteArray rdata
+
+builderMessage :: Message -> BB.Builder
+builderMessage Message{ 
+    identifier, bitfields, question, answer, authority, additional
+  } =  BB.word16BE identifier
+    <> BB.word16BE (getBitfields bitfields)
+    <> BB.word16BE questionCount
+    <> BB.word16BE answerCount
+    <> BB.word16BE authorityCount
+    <> BB.word16BE additionalCount
+    <> Contiguous.foldMap builderQuestion question
+    <> Contiguous.foldMap builderResourceRecord answer
+    <> Contiguous.foldMap builderResourceRecord authority
+    <> Contiguous.foldMap builderResourceRecord additional
+  where
+  questionCount = fromIntegral $ Contiguous.size question
+  answerCount = fromIntegral $ Contiguous.size answer
+  authorityCount = fromIntegral $ Contiguous.size authority
+  additionalCount = fromIntegral $ Contiguous.size additional
+
+builderQuestion :: Question -> BB.Builder
+builderQuestion Question{
+    name, type_, class_
+  } =  BB.word16BE (fromIntegral $ sizeofByteArray name)
+    <> BB.byteArray name
+    <> BB.word16BE (coerce type_)
+    <> BB.word16BE (coerce class_)
+
+builderResourceRecord :: ResourceRecord -> BB.Builder
+builderResourceRecord ResourceRecord{
+    name, type_, class_, ttl, rdata
+  } = BB.word16BE (fromIntegral $ sizeofByteArray name)
+   <> BB.byteArray name
+   <> BB.word16BE (coerce type_)
+   <> BB.word16BE (coerce class_)
+   <> BB.word32BE ttl
+   <> BB.word16BE (fromIntegral $ sizeofByteArray rdata)
+   <> BB.byteArray rdata
 
 decode :: Bytes -> Maybe Message
-decode b = Parser.parseBytesMaybe parser b
+decode b = P.parseBytesMaybe parser b
 
 parser :: Parser () s Message
 parser = do
@@ -79,11 +135,15 @@ parser = do
 -- The top two bits of this number must be 00 (indicates the label format is being used) 
 -- which gives a maximum domain name length of 63 bytes (octets). 
 -- A value of zero indicates the end of the name field.
+--
+-- the upper two bits being 11 indicates 
+-- compression with a pointer to a previous domain name
 
 parseQuestion :: Parser () s Question
 parseQuestion = do
   len <- P.any ()
   name' <- P.take () (fromIntegral len)
+  when (Bytes.all (\b -> testBit b 7) name') $ P.fail () -- QNAME compression encountered (RFC 1035 section 4.1.4)"
   type_' <- Type <$> P.word16 ()
   class_' <- Class <$> P.word16 ()
   pure $ Question
@@ -96,6 +156,7 @@ parseResourceRecord :: Parser () s ResourceRecord
 parseResourceRecord = do
   namelen <- P.any ()
   name' <- P.take () (fromIntegral namelen)
+  when (Bytes.all (\b -> testBit b 7) name') $ P.fail () -- NAME compression encountered (RFC 1035 section 4.1.4)"
   type_' <- Type <$> P.word16 ()
   class_' <- Class <$> P.word16 ()
   ttl' <- P.word32 ()
@@ -133,7 +194,7 @@ data ResourceRecord = ResourceRecord
   } deriving (Eq,Show)
 
 -- | Raw data format for the header of DNS Query and Response.
-data Bitfields = Bitfields !Word16
+data Bitfields = Bitfields { getBitfields :: !Word16 }
   deriving (Eq,Show)
 
 newtype ResponseCode = ResponseCode Word8
