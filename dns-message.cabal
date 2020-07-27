@@ -24,3 +24,26 @@ library
   hs-source-dirs: src
   default-language: Haskell2010
   ghc-options: -Wall
+
+test-suite test
+  type:
+    exitcode-stdio-1.0
+  hs-source-dirs:
+    test
+  main-is:
+    Main.hs
+  build-depends:
+      HUnit
+    , tasty
+    , base
+    , tasty-hunit
+    , dns-message
+    , byteslice
+    , primitive
+    , bytesmith
+  ghc-options:
+    -Wall
+    -O2
+  default-language:
+    Haskell2010
+

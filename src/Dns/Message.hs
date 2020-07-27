@@ -3,11 +3,13 @@
 {-# language PatternSynonyms #-}
 {-# language RankNTypes #-}
 {-# language NamedFieldPuns #-}
+{-# language BinaryLiterals #-}
 
 module Dns.Message
   ( -- * Functions
     encode
   , decode
+  , parser
     -- * Types
   , Message(..)
   , ResourceRecord(..)
@@ -38,14 +40,13 @@ module Dns.Message
   , truncation
   ) where
 
-import Control.Monad (when)
 import Data.Bits (testBit,setBit,clearBit)
 import Data.Bytes (Bytes, toByteArray)
 import Data.Bytes.Parser (Parser)
 import Data.Coerce (coerce)
 import Data.Primitive (SmallArray,ByteArray,sizeofByteArray)
 import Data.Word (Word32,Word16,Word8)
-import qualified Data.Bytes as Bytes
+
 import qualified Data.Bytes.Builder as BB
 import qualified Data.Bytes.Chunks as Chunks
 import qualified Data.Bytes.Parser as P
@@ -53,20 +54,7 @@ import qualified Data.Bytes.Parser.BigEndian as P
 import qualified Data.Primitive.Contiguous as Contiguous
 
 encode :: Message -> ByteArray
-encode m = Chunks.concatU $ BB.run len (builderMessage m)
-  where
-  len = lenIdentifier + lenBitfields + 2 + 2 + 2 + 2 + lenQuestion + lenAnswer + lenAuthority + lenAdditional
-  lenIdentifier = 2
-  lenBitfields = 2
-  lenQuestion = 
-    let qlen :: Question -> Int
-        qlen Question{name} = 2 + sizeofByteArray name + 2 + 2
-     in Contiguous.foldl' (\acc q -> acc + qlen q) 0 (question m)
-  lenAnswer     = Contiguous.foldl' (\acc x -> lenResourceRecord x + acc) 0 (answer m)
-  lenAuthority  = Contiguous.foldl' (\acc x -> lenResourceRecord x + acc) 0 (authority m)
-  lenAdditional = Contiguous.foldl' (\acc x -> lenResourceRecord x + acc) 0 (additional m)
-  lenResourceRecord :: ResourceRecord -> Int
-  lenResourceRecord ResourceRecord{name,rdata} = 2 + sizeofByteArray name + 2 + 2 + 4 + 2 + sizeofByteArray rdata
+encode m = Chunks.concatU $ BB.run 4080 (builderMessage m)
 
 builderMessage :: Message -> BB.Builder
 builderMessage Message{ 
@@ -77,10 +65,10 @@ builderMessage Message{
     <> BB.word16BE answerCount
     <> BB.word16BE authorityCount
     <> BB.word16BE additionalCount
-    <> Contiguous.foldMap builderQuestion question
-    <> Contiguous.foldMap builderResourceRecord answer
-    <> Contiguous.foldMap builderResourceRecord authority
-    <> Contiguous.foldMap builderResourceRecord additional
+    <> Contiguous.foldMap' builderQuestion question
+    <> Contiguous.foldMap' builderResourceRecord answer
+    <> Contiguous.foldMap' builderResourceRecord authority
+    <> Contiguous.foldMap' builderResourceRecord additional
   where
   questionCount = fromIntegral $ Contiguous.size question
   answerCount = fromIntegral $ Contiguous.size answer
@@ -90,33 +78,36 @@ builderMessage Message{
 builderQuestion :: Question -> BB.Builder
 builderQuestion Question{
     name, type_, class_
-  } =  BB.word16BE (fromIntegral $ sizeofByteArray name)
-    <> BB.byteArray name
+  } =  builderDnsName name
     <> BB.word16BE (coerce type_)
     <> BB.word16BE (coerce class_)
 
 builderResourceRecord :: ResourceRecord -> BB.Builder
 builderResourceRecord ResourceRecord{
     name, type_, class_, ttl, rdata
-  } = BB.word16BE (fromIntegral $ sizeofByteArray name)
-   <> BB.byteArray name
+  } = builderDnsName name
    <> BB.word16BE (coerce type_)
    <> BB.word16BE (coerce class_)
    <> BB.word32BE ttl
    <> BB.word16BE (fromIntegral $ sizeofByteArray rdata)
    <> BB.byteArray rdata
 
+builderDnsName :: SmallArray DnsName -> BB.Builder
+builderDnsName name = 
+  flip Contiguous.foldMap' name $ \(DnsName len n) ->
+    BB.word8 len <> BB.byteArray n
+
 decode :: Bytes -> Maybe Message
 decode b = P.parseBytesMaybe parser b
 
-parser :: Parser () s Message
+parser :: Parser Int s Message
 parser = do
-  identifier' <- P.word16 ()
-  bitfields' <- Bitfields <$> P.word16 ()
-  questionCount <- P.word16 ()
-  answerCount <- P.word16 ()
-  authorityCount <- P.word16 ()
-  additionalCount <- P.word16 ()
+  identifier' <- P.word16 1
+  bitfields' <- Bitfields <$> P.word16 2
+  questionCount <- P.word16 3
+  answerCount <- P.word16 4
+  authorityCount <- P.word16 5
+  additionalCount <- P.word16 6
   question' <- P.replicate (fromIntegral questionCount) parseQuestion
   answer' <- P.replicate (fromIntegral answerCount) parseResourceRecord
   authority' <- P.replicate (fromIntegral authorityCount) parseResourceRecord
@@ -130,45 +121,57 @@ parser = do
     , additional = additional'
     }
 
--- QNAME
--- Single octet defining the number of characters in the label which follows. 
--- The top two bits of this number must be 00 (indicates the label format is being used) 
--- which gives a maximum domain name length of 63 bytes (octets). 
--- A value of zero indicates the end of the name field.
---
--- the upper two bits being 11 indicates 
--- compression with a pointer to a previous domain name
-
-parseQuestion :: Parser () s Question
+parseQuestion :: Parser Int s Question
 parseQuestion = do
-  len <- P.any ()
-  name' <- P.take () (fromIntegral len)
-  when (Bytes.all (\b -> testBit b 7) name') $ P.fail () -- QNAME compression encountered (RFC 1035 section 4.1.4)"
-  type_' <- Type <$> P.word16 ()
-  class_' <- Class <$> P.word16 ()
+  name' <- parseDnsName
+  type_' <- Type <$> P.word16 10
+  class_' <- Class <$> P.word16 11
   pure $ Question
-    { name = toByteArray name'
+    { name = name'
     , type_ = type_'
     , class_ = class_'
     }
 
-parseResourceRecord :: Parser () s ResourceRecord
+parseResourceRecord :: Parser Int s ResourceRecord
 parseResourceRecord = do
-  namelen <- P.any ()
-  name' <- P.take () (fromIntegral namelen)
-  when (Bytes.all (\b -> testBit b 7) name') $ P.fail () -- NAME compression encountered (RFC 1035 section 4.1.4)"
-  type_' <- Type <$> P.word16 ()
-  class_' <- Class <$> P.word16 ()
-  ttl' <- P.word32 ()
-  rdataLen <- P.word16 ()
-  rdata' <- P.take () (fromIntegral rdataLen)
+  name' <- parseDnsName
+  type_' <- Type <$> P.word16 15
+  class_' <- Class <$> P.word16 16
+  ttl' <- P.word32 17
+  rdataLen <- P.word16 18
+  rdata' <- P.take 19 (fromIntegral rdataLen)
   pure $ ResourceRecord
-    { name = toByteArray name'
+    { name = name'
     , type_ = type_'
     , class_ = class_'
     , ttl = ttl'
     , rdata = toByteArray rdata'
     }
+
+-- The compression scheme allows a domain name in a message to be
+-- represented as either:
+--   - a sequence of labels ending in a zero octet
+--   - a pointer
+--   - a sequence of labels ending with a pointer
+parseDnsName :: Parser Int s (SmallArray DnsName)
+parseDnsName = do
+  (len, labels) <- go 0 []
+  pure $ Contiguous.unsafeFromListReverseN len labels
+  where
+  go len xs = do
+    labelLen <- P.word8 12
+    case labelLen of
+      0 -> pure (len, xs)
+      _ -> do
+        case (testBit labelLen 7 && testBit labelLen 6) of
+          True -> do -- compressed
+            ptr <- P.take 99 1 -- second octet of pointer
+            let !ptr' = toByteArray $! ptr
+            pure $ ((len+1), (DnsName labelLen ptr' : xs))
+          False -> do -- uncompressed
+            !label <- P.take 13 (fromIntegral labelLen)
+            let !label' = toByteArray $! label
+            go (len+1) (DnsName labelLen label' : xs)
 
 data Message = Message
   { identifier :: !Word16 -- ^ Query or reply identifier
@@ -179,14 +182,19 @@ data Message = Message
   , additional :: !(SmallArray ResourceRecord) -- ^ RRs holding additional information
   } deriving (Eq, Show)
 
+data DnsName = DnsName 
+  !Word8 -- length including upper 2 bits which specify encoding
+  !ByteArray -- offset or label
+  deriving (Eq, Show)
+
 data Question = Question
-  { name :: !ByteArray -- ^ Name
+  { name :: !(SmallArray DnsName) -- ^ Name
   , type_ :: !Type -- ^ Question type
   , class_ :: !Class  -- ^ Question class
   } deriving (Eq,Show)
 
 data ResourceRecord = ResourceRecord
-  { name :: !ByteArray -- ^ Name
+  { name :: !(SmallArray DnsName) -- ^ Name
   , type_ :: !Type -- ^ Resource record type
   , class_ :: !Class  -- ^ Resource record class
   , ttl :: !Word32 -- ^ Time to live
@@ -328,4 +336,11 @@ truncation k (Bitfields x) = fmap (\b -> Bitfields (assignBit x 9 b)) (k (testBi
 -- checkingDisabled :: !Bool
 -- -- ^ CD (Checking Disabled) bit - (RFC4035, Section 3.2.2).
 -- deriving (Eq, Show)
+
+-- showBits :: (Integral a, Show a) => a -> String
+-- showBits x = 
+--   let y = showIntAtBase 2 intToDigit x ""
+--   in pad y <> y
+--   where
+--   pad z = "0b" <> (replicate (8 - (length z)) '0')
 
