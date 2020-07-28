@@ -113,18 +113,17 @@ builderLabel name =
         Uncompressed{} -> BB.word8 0
         Compressed{} -> mempty
 
-
 decode :: Bytes -> Maybe Message
 decode b = P.parseBytesMaybe parser b
 
-parser :: Parser Int s Message
+parser :: Parser () s Message
 parser = do
-  identifier' <- P.word16 1
-  bitfields' <- Bitfields <$> P.word16 2
-  questionCount <- P.word16 3
-  answerCount <- P.word16 4
-  authorityCount <- P.word16 5
-  additionalCount <- P.word16 6
+  identifier' <- P.word16 ()
+  bitfields' <- Bitfields <$> P.word16 ()
+  questionCount <- P.word16 ()
+  answerCount <- P.word16 ()
+  authorityCount <- P.word16 ()
+  additionalCount <- P.word16 ()
   question' <- P.replicate (fromIntegral questionCount) parseQuestion
   answer' <- P.replicate (fromIntegral answerCount) parseResourceRecord
   authority' <- P.replicate (fromIntegral authorityCount) parseResourceRecord
@@ -138,25 +137,25 @@ parser = do
     , additional = additional'
     }
 
-parseQuestion :: Parser Int s Question
+parseQuestion :: Parser () s Question
 parseQuestion = do
   name' <- parseLabel
-  type_' <- Type <$> P.word16 10
-  class_' <- Class <$> P.word16 11
+  type_' <- Type <$> P.word16 ()
+  class_' <- Class <$> P.word16 ()
   pure $ Question
     { name = name'
     , type_ = type_'
     , class_ = class_'
     }
 
-parseResourceRecord :: Parser Int s ResourceRecord
+parseResourceRecord :: Parser () s ResourceRecord
 parseResourceRecord = do
   name' <- parseLabel
-  type_' <- Type <$> P.word16 15
-  class_' <- Class <$> P.word16 16
-  ttl' <- P.word32 17
-  rdataLen <- P.word16 18
-  rdata' <- P.take 19 (fromIntegral rdataLen)
+  type_' <- Type <$> P.word16 ()
+  class_' <- Class <$> P.word16 ()
+  ttl' <- P.word32 ()
+  rdataLen <- P.word16 ()
+  rdata' <- P.take () (fromIntegral rdataLen)
   pure $ ResourceRecord
     { name = name'
     , type_ = type_'
@@ -170,26 +169,26 @@ parseResourceRecord = do
 --   - a sequence of labels ending in a zero octet
 --   - a pointer
 --   - a sequence of labels ending with a pointer
-parseLabel :: Parser Int s (SmallArray Label)
+parseLabel :: Parser () s (SmallArray Label)
 parseLabel = do
   (len, labels) <- go 0 []
   pure $ Contiguous.unsafeFromListReverseN len labels
   where
   go !len !xs = do
-    labelLen <- P.word8 12
+    labelLen <- P.word8 ()
     case labelLen of
       0 -> pure (len, xs)
       _ -> case unsafeShiftR labelLen 6 of
         0b00 -> do -- uncompressed
-          !label <- P.take 13 (fromIntegral labelLen)
+          !label <- P.take () (fromIntegral labelLen)
           let !label' = toByteArray $! label
           go (len+1) (Uncompressed label' : xs)
         0b11 -> do -- compressed
           let w8A = labelLen .&. 0b_0011_1111 -- first octect of pointer wither upper 2 bits zeroed out
-          w8B <- P.word8 99 -- second octet of pointer
+          w8B <- P.word8 () -- second octet of pointer
           let ptr = fromIntegral @Word @Word16 (unsafeShiftL (fromIntegral w8A) 8 .|. fromIntegral w8B)
           pure $ ((len+1), (Compressed ptr : xs))
-        _ -> P.fail 23
+        _ -> P.fail ()
 
 data Message = Message
   { identifier :: !Word16 -- ^ Query or reply identifier

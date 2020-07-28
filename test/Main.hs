@@ -24,11 +24,11 @@ unitTests = testGroup "Unit tests"
   [ testGroup "encode-decode-round-trip"
     [ testCase "A" $ do
       dnsMsg <- readFileBytes "test/dns-msg-a.bin"
-      let dnsMsg' = either (\x -> error $ "ERROR INDEX: " <> show x) id $ P.parseBytesEither Dns.parser dnsMsg
+      let dnsMsg' = unwrap $ P.parseBytesEither Dns.parser dnsMsg
       Dns.encode dnsMsg' @?= Bytes.toByteArray dnsMsg
     , testCase "B" $ do
       dnsMsg2 <- readFileBytes "test/dns-msg-b.bin"
-      let dnsMsg2' = either (\x -> error $ "ERROR INDEX: " <> show x) id $ P.parseBytesEither Dns.parser dnsMsg2
+      let dnsMsg2' = unwrap $ P.parseBytesEither Dns.parser dnsMsg2
       Dns.encode dnsMsg2' @?= Bytes.toByteArray dnsMsg2
     ]
   ]
