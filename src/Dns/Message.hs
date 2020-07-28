@@ -1,10 +1,12 @@
 {-# language BangPatterns #-}
 {-# language BinaryLiterals #-}
 {-# language DuplicateRecordFields #-}
+{-# language LambdaCase #-}
+{-# language NamedFieldPuns #-}
+{-# language NumericUnderscores #-}
 {-# language PatternSynonyms #-}
 {-# language RankNTypes #-}
-{-# language NamedFieldPuns #-}
-{-# language BinaryLiterals #-}
+{-# language TypeApplications #-}
 
 module Dns.Message
   ( -- * Functions
@@ -41,7 +43,7 @@ module Dns.Message
   , truncation
   ) where
 
-import Data.Bits (testBit,setBit,clearBit,unsafeShiftR)
+import Data.Bits (testBit,setBit,clearBit,unsafeShiftR,unsafeShiftL,(.|.),(.&.))
 import Data.Bytes (Bytes, toByteArray)
 import Data.Bytes.Parser (Parser)
 import Data.Coerce (coerce)
@@ -79,24 +81,38 @@ builderMessage Message{
 builderQuestion :: Question -> BB.Builder
 builderQuestion Question{
     name, type_, class_
-  } =  builderDnsName name
+  } =  builderLabel name
     <> BB.word16BE (coerce type_)
     <> BB.word16BE (coerce class_)
 
 builderResourceRecord :: ResourceRecord -> BB.Builder
 builderResourceRecord ResourceRecord{
     name, type_, class_, ttl, rdata
-  } = builderDnsName name
+  } = builderLabel name
    <> BB.word16BE (coerce type_)
    <> BB.word16BE (coerce class_)
    <> BB.word32BE ttl
    <> BB.word16BE (fromIntegral $ sizeofByteArray rdata)
    <> BB.byteArray rdata
 
-builderDnsName :: SmallArray DnsName -> BB.Builder
-builderDnsName name = 
-  flip Contiguous.foldMap' name $ \(DnsName len n) ->
-    BB.word8 len <> BB.byteArray n
+builderLabel :: SmallArray Label -> BB.Builder
+builderLabel name = 
+  ( flip Contiguous.foldMap' name $ \case
+      Uncompressed l -> 
+           BB.word8 (fromIntegral $ sizeofByteArray l)
+        <> BB.byteArray l
+      Compressed w -> BB.word16BE $ w .|. 0b_1100_0000_0000_0000
+  ) <> terminator
+  where
+  terminator :: BB.Builder
+  terminator = case Contiguous.size name of
+    0 -> BB.word8 0
+    sz -> 
+      -- last element
+      case Contiguous.index name (sz-1) of
+        Uncompressed{} -> BB.word8 0
+        Compressed{} -> mempty
+
 
 decode :: Bytes -> Maybe Message
 decode b = P.parseBytesMaybe parser b
@@ -124,7 +140,7 @@ parser = do
 
 parseQuestion :: Parser Int s Question
 parseQuestion = do
-  name' <- parseDnsName
+  name' <- parseLabel
   type_' <- Type <$> P.word16 10
   class_' <- Class <$> P.word16 11
   pure $ Question
@@ -135,7 +151,7 @@ parseQuestion = do
 
 parseResourceRecord :: Parser Int s ResourceRecord
 parseResourceRecord = do
-  name' <- parseDnsName
+  name' <- parseLabel
   type_' <- Type <$> P.word16 15
   class_' <- Class <$> P.word16 16
   ttl' <- P.word32 17
@@ -154,8 +170,8 @@ parseResourceRecord = do
 --   - a sequence of labels ending in a zero octet
 --   - a pointer
 --   - a sequence of labels ending with a pointer
-parseDnsName :: Parser Int s (SmallArray DnsName)
-parseDnsName = do
+parseLabel :: Parser Int s (SmallArray Label)
+parseLabel = do
   (len, labels) <- go 0 []
   pure $ Contiguous.unsafeFromListReverseN len labels
   where
@@ -167,11 +183,12 @@ parseDnsName = do
         0b00 -> do -- uncompressed
           !label <- P.take 13 (fromIntegral labelLen)
           let !label' = toByteArray $! label
-          go (len+1) (DnsName labelLen label' : xs)
+          go (len+1) (Uncompressed label' : xs)
         0b11 -> do -- compressed
-          ptr <- P.take 99 1 -- second octet of pointer
-          let !ptr' = toByteArray $! ptr
-          pure $ ((len+1), (DnsName labelLen ptr' : xs))
+          let w8A = labelLen .&. 0b_0011_1111 -- first octect of pointer wither upper 2 bits zeroed out
+          w8B <- P.word8 99 -- second octet of pointer
+          let ptr = fromIntegral @Word @Word16 (unsafeShiftL (fromIntegral w8A) 8 .|. fromIntegral w8B)
+          pure $ ((len+1), (Compressed ptr : xs))
         _ -> P.fail 23
 
 data Message = Message
@@ -183,19 +200,19 @@ data Message = Message
   , additional :: !(SmallArray ResourceRecord) -- ^ RRs holding additional information
   } deriving (Eq, Show)
 
-data DnsName = DnsName 
-  !Word8 -- length including upper 2 bits which specify encoding
-  !ByteArray -- offset or label
+data Label 
+  = Uncompressed !ByteArray
+  | Compressed !Word16 -- must be less than 2^14
   deriving (Eq, Show)
 
 data Question = Question
-  { name :: !(SmallArray DnsName) -- ^ Name
+  { name :: !(SmallArray Label) -- ^ Name
   , type_ :: !Type -- ^ Question type
   , class_ :: !Class  -- ^ Question class
   } deriving (Eq,Show)
 
 data ResourceRecord = ResourceRecord
-  { name :: !(SmallArray DnsName) -- ^ Name
+  { name :: !(SmallArray Label) -- ^ Name
   , type_ :: !Type -- ^ Resource record type
   , class_ :: !Class  -- ^ Resource record class
   , ttl :: !Word32 -- ^ Time to live
