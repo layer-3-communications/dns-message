@@ -1,4 +1,5 @@
 {-# language BangPatterns #-}
+{-# language BinaryLiterals #-}
 {-# language DuplicateRecordFields #-}
 {-# language PatternSynonyms #-}
 {-# language RankNTypes #-}
@@ -40,7 +41,7 @@ module Dns.Message
   , truncation
   ) where
 
-import Data.Bits (testBit,setBit,clearBit)
+import Data.Bits (testBit,setBit,clearBit,unsafeShiftR)
 import Data.Bytes (Bytes, toByteArray)
 import Data.Bytes.Parser (Parser)
 import Data.Coerce (coerce)
@@ -158,20 +159,20 @@ parseDnsName = do
   (len, labels) <- go 0 []
   pure $ Contiguous.unsafeFromListReverseN len labels
   where
-  go len xs = do
+  go !len !xs = do
     labelLen <- P.word8 12
     case labelLen of
       0 -> pure (len, xs)
-      _ -> do
-        case (testBit labelLen 7 && testBit labelLen 6) of
-          True -> do -- compressed
-            ptr <- P.take 99 1 -- second octet of pointer
-            let !ptr' = toByteArray $! ptr
-            pure $ ((len+1), (DnsName labelLen ptr' : xs))
-          False -> do -- uncompressed
-            !label <- P.take 13 (fromIntegral labelLen)
-            let !label' = toByteArray $! label
-            go (len+1) (DnsName labelLen label' : xs)
+      _ -> case unsafeShiftR labelLen 6 of
+        0b00 -> do -- uncompressed
+          !label <- P.take 13 (fromIntegral labelLen)
+          let !label' = toByteArray $! label
+          go (len+1) (DnsName labelLen label' : xs)
+        0b11 -> do -- compressed
+          ptr <- P.take 99 1 -- second octet of pointer
+          let !ptr' = toByteArray $! ptr
+          pure $ ((len+1), (DnsName labelLen ptr' : xs))
+        _ -> P.fail 23
 
 data Message = Message
   { identifier :: !Word16 -- ^ Query or reply identifier
