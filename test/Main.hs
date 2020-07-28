@@ -21,13 +21,16 @@ tests = testGroup "Tests" [unitTests]
 
 unitTests :: TestTree
 unitTests = testGroup "Unit tests"
-  [ testCase "encode/decode round trip" $ do
-      dnsMsg <- readFileBytes "test/dns-msg.bin"
-      dnsMsg2 <- readFileBytes "test/dns-msg2.bin"
+  [ testGroup "encode-decode-round-trip"
+    [ testCase "A" $ do
+      dnsMsg <- readFileBytes "test/dns-msg-a.bin"
       let dnsMsg' = either (\x -> error $ "ERROR INDEX: " <> show x) id $ P.parseBytesEither Dns.parser dnsMsg
-      let dnsMsg2' = either (\x -> error $ "ERROR INDEX: " <> show x) id $ P.parseBytesEither Dns.parser dnsMsg2
       Dns.encode dnsMsg' @?= Bytes.toByteArray dnsMsg
+    , testCase "B" $ do
+      dnsMsg2 <- readFileBytes "test/dns-msg-b.bin"
+      let dnsMsg2' = either (\x -> error $ "ERROR INDEX: " <> show x) id $ P.parseBytesEither Dns.parser dnsMsg2
       Dns.encode dnsMsg2' @?= Bytes.toByteArray dnsMsg2
+    ]
   ]
 
 unwrap :: Either a b -> b
