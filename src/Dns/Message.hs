@@ -19,6 +19,9 @@ module Dns.Message
   , Question(..)
   , Type(..)
   , Class(..)
+  , Label(..)
+  , Bitfields(..)
+  , QueryResponse(..)
     -- * Opcode Patterns
   , pattern Query
   , pattern IQuery
@@ -37,13 +40,23 @@ module Dns.Message
   , pattern NXRRSet
   , pattern NotAuth
   , pattern NotZone
+    -- * Resource Record Types
+  , pattern A
+  , pattern AAAA
+  , pattern NS
+    -- * DNS Classes
+  , pattern Internet
+  , pattern Chaos
+  , pattern Hesiod
     -- * Bitfields
-  , query
+  , queryResponse
   , authoritativeAnswer
   , truncation
+  , recursionDesired
   ) where
 
 import Data.Bits (testBit,setBit,clearBit,unsafeShiftR,unsafeShiftL,(.|.),(.&.))
+import Data.Bool (bool)
 import Data.Bytes (Bytes, toByteArray)
 import Data.Bytes.Parser (Parser)
 import Data.Coerce (coerce)
@@ -199,6 +212,10 @@ data Message = Message
   , additional :: !(SmallArray ResourceRecord) -- ^ RRs holding additional information
   } deriving (Eq, Show)
 
+-- | A domain name label. In @www.google.com@, the labels are @www@, @google@,
+-- and @com@. DNS allowed labels to be encoded as a sequence of the bytes that
+-- comprise them (@Uncompressed@) or as a pointer to another position in the
+-- message (@Compressed@).
 data Label 
   = Uncompressed !ByteArray
   | Compressed !Word16 -- must be less than 2^14
@@ -219,6 +236,9 @@ data ResourceRecord = ResourceRecord
   } deriving (Eq,Show)
 
 -- | Raw data format for the header of DNS Query and Response.
+--
+-- It is recommended that users construct a bitfields value with the
+-- lenses provided in this module.
 data Bitfields = Bitfields { getBitfields :: !Word16 }
   deriving (Eq,Show)
 
@@ -306,8 +326,36 @@ pattern Update = Opcode 5
 newtype Type = Type Word16
   deriving (Eq,Show)
 
+-- | A host address
+pattern A :: Type
+pattern A = Type 1
+
+-- | An authoritative name server
+pattern NS :: Type
+pattern NS = Type 2
+
+-- | IP6 address
+pattern AAAA :: Type
+pattern AAAA = Type 28
+
 newtype Class = Class Word16
   deriving (Eq,Show)
+
+-- | A host address
+pattern Internet :: Class
+pattern Internet = Class 1
+
+-- | An authoritative name server
+pattern Chaos :: Class
+pattern Chaos = Class 3
+
+-- | IP6 address
+pattern Hesiod :: Class
+pattern Hesiod = Class 4
+
+data QueryResponse
+  = Query_ -- ^ Suffixed with underscore to prevent a naming conflict
+  | Response
 
 type Lens' a b = forall f. Functor f => (b -> f b) -> (a -> f a)
 
@@ -317,10 +365,10 @@ assignBit !w !ix !b = case b of
   True -> setBit w ix
   False -> clearBit w ix
 
--- | True means query, False means response
-query :: Lens' Bitfields Bool
-{-# inline query #-}
-query k (Bitfields x) = fmap (\b -> Bitfields (assignBit x 15 b)) (k (testBit x 15))
+-- | False means query, True means response
+queryResponse :: Lens' Bitfields QueryResponse
+{-# inline queryResponse #-}
+queryResponse k (Bitfields x) = fmap (\b -> Bitfields (assignBit x 15 (case b of {Query_ -> False; Response -> True}))) (k (bool Query_ Response (testBit x 15)))
 
 -- | AA (Authoritative Answer) bit - this bit is valid in responses,
 -- and specifies that the responding name server is an
@@ -335,6 +383,12 @@ authoritativeAnswer k (Bitfields x) = fmap (\b -> Bitfields (assignBit x 10 b)) 
 truncation :: Lens' Bitfields Bool
 {-# inline truncation #-}
 truncation k (Bitfields x) = fmap (\b -> Bitfields (assignBit x 9 b)) (k (testBit x 9))
+
+-- | RD (Recursion Desired) bit - directs the name server to pursue the
+-- query recursively.
+recursionDesired :: Lens' Bitfields Bool
+{-# inline recursionDesired #-}
+recursionDesired k (Bitfields x) = fmap (\b -> Bitfields (assignBit x 8 b)) (k (testBit x 8))
 
 -- TODO: Add these other lenses. Opcode and response code are a little tricky.
 --
