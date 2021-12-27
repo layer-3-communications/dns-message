@@ -5,8 +5,8 @@ synopsis: Encode and decode DNS messages
 license: BSD-3-Clause
 license-file: LICENSE
 author: Zachary Churchill
-maintainer: zchurchill@layer3com.com
-copyright: 2020 Layer 3 Communications
+maintainer: amartin@layer3com.com
+copyright: 2021 Layer 3 Communications
 category: Data
 build-type: Simple
 extra-source-files: CHANGELOG.md
